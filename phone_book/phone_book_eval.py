@@ -88,7 +88,7 @@ def main(rank, world_size, args):
     register_fsdp_forward_method(model, "generate")
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, token=hf_token, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = 'left'
 
