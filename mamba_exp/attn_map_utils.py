@@ -6,7 +6,8 @@ import functools
 import mamba_ssm.ops.triton.ssd_combined as ssd_combined
 import matplotlib.pyplot as plt
 
-LOGIT_DIR = '/work/nvme/bcjw/hshen14/datasets/phonebook/logits'
+# TODO: Set storing directories for the logits
+LOGIT_DIR = '/logit/dir'
 
 def segment_sum(input_tensor):
     """
@@ -64,16 +65,18 @@ def _ssd_attn_map_decorator(func, store_logits=False, compute_attn_map=False):
             M, _, _ = ssd_attn_map(args[1], args[2], args[3], args[4], kwargs['dt_bias'], kwargs['dt_softplus'], kwargs['dt_limit'])
             decorator.ssd_attn_map = M
         decorator.layer_idx += 1
+        if decorator.layer_idx in [9, 18, 27]:
+            decorator.layer_idx += 1 # skip attention layers
         return func(*args, **kwargs)
     decorator.layer_idx = 0
     decorator.ssd_attn_map = None
     return decorator
 
-def toggle_decorator(output_attentions=False):
+def toggle_decorator(output_attentions=False, store_logits=False, compute_attn_map=False):
     func = ssd_combined._mamba_chunk_scan_combined_fwd
     if output_attentions:
         if not hasattr(func, '__wrapped__'):
-            ssd_combined._mamba_chunk_scan_combined_fwd = _ssd_attn_map_decorator(func)
+            ssd_combined._mamba_chunk_scan_combined_fwd = _ssd_attn_map_decorator(func, store_logits, compute_attn_map)
         else:
             ssd_combined._mamba_chunk_scan_combined_fwd.layer_idx = 0
             ssd_combined._mamba_chunk_scan_combined_fwd.ssd_attn_map = None
