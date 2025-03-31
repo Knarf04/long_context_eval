@@ -9,6 +9,8 @@ from tqdm import tqdm
 
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer
+import random
+import datasets
 
 # Modified following: https://arxiv.org/abs/2406.07887 section 3.3.3
 class PhoneBookDataset(Dataset):
@@ -17,16 +19,17 @@ class PhoneBookDataset(Dataset):
                  tokenizer: AutoTokenizer = None, 
                  size: int = 1000,
                  few_shot: int = 2, 
-                 reversed: bool = False):
+                 reversed: bool = False,
+                 random_depth: bool = False):
         
         assert length > 500, "The length must be greater than 500 to ensure proper depth control."
-        assert size >= 100, "The size of the data set must be larger enough to cover all percentile."
 
         self.length = length
         self.tokenizer = tokenizer
         self.few_shot = few_shot
         self.size = size
         self.reversed = reversed
+        self.random_depth = random_depth
         
         if not self.reversed:
             self.few_shot_template = textwrap.dedent('''\
@@ -150,7 +153,10 @@ class PhoneBookDataset(Dataset):
         return self.size
 
     def __getitem__(self, idx):
-        depth = idx % 100  # convert idx into a percentage evenly
+        if self.random_depth:
+            depth = random.random() * 100
+        else:
+            depth = idx % 100  # convert idx into a percentage evenly
         input_raw, input_ids, attention_mask, label = self._gen_phone_book(depth)
         if self.tokenizer:
             return {
@@ -189,6 +195,7 @@ if __name__ == "__main__":
     parser.add_argument('--size', default=100, type=int, help="Number of samples in dataset.") 
     parser.add_argument('--few-shot', default=2, type=int, help="Few-shot examples in prompt.") 
     parser.add_argument('--reversed', action='store_true', help="Use reversed prompt template.") 
+    parser.add_argument('--random-depth', action='store_true', help="Use random depth for each sample.") 
     parser.add_argument('--save-path', required=True, type=str, help="Path to save dataset.") 
     args = parser.parse_args()
 
@@ -199,7 +206,8 @@ if __name__ == "__main__":
         'length': args.length,
         'size': args.size,
         'few_shot': args.few_shot,
-        'reversed': args.reversed
+        'reversed': args.reversed,
+        'random_depth': args.random_depth
     }
 
     # Set up multiprocessing pool and reinitialize tokenizer in each worker.
@@ -209,10 +217,23 @@ if __name__ == "__main__":
         dataset_list = list(tqdm(pool.imap(generate_sample, range(args.size)),
                                  total=args.size, desc="Generating dataset"))
     
+    avg_len = 0.0
+    for i in dataset_list:
+        avg_len += torch.sum(i['attention_mask'])
+    print(f"---Sanity Check: average length = {avg_len/len(dataset_list)}, dataset size = {len(dataset_list)}---")
+
+    dataset = datasets.Dataset.from_list(dataset_list)
+
     tokenized = (args.model is not None)
-    dataset_name = f"length={args.length}_tokenized={tokenized}_size={args.size}_few-shot={args.few_shot}_reversed={args.reversed}.pt"
-    
-    os.makedirs(args.save_path, exist_ok=True)
-    dataset_path = os.path.join(args.save_path, dataset_name)
-    torch.save(dataset_list, dataset_path)
-    print(f"Dataset saved to {args.save_path}")
+    dataset_name = f"length={args.length}_tokenized={tokenized}_size={args.size}_few-shot={args.few_shot}_reversed={args.reversed}"
+    if "llama" in args.model.lower():
+        model_name = "llama"
+    elif "bamba" in args.model.lower():
+        model_name = "bamba"
+    else:
+        model_name = "other"
+    dataset_path = os.path.join(args.save_path, model_name)
+    os.makedirs(dataset_path, exist_ok=True)
+    dataset_path = os.path.join(dataset_path, dataset_name)
+    dataset.save_to_disk(dataset_path)
+    print(f"Dataset saved to {dataset_path}")

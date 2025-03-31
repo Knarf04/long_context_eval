@@ -1,9 +1,10 @@
 import os
+import gc
 import argparse
-import functools
 from tqdm import tqdm
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+import datasets
 # from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 from phone_book_dataset import PhoneBookDataset
 
@@ -77,8 +78,20 @@ def main(rank, world_size, args):
     device = torch.device(torch.distributed.get_rank())
     torch.cuda.set_device(device)
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, trust_remote_code=True, device_map=device).to(device)
+    config_kwargs = {
+        "max_position_embeddings": 16384,
+        # "rope_theta": 40000.0,
+        "attn_implementation": "flash_attention_2"
+    }
+    config = AutoConfig.from_pretrained(args.model, **config_kwargs)
     
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+        device_map=device,
+        torch_dtype=torch.float16,
+        config=config).to(device)
+        
     mesh = init_device_mesh("cuda", (torch.distributed.get_world_size(),))
 
     for layer in model.model.layers:
@@ -94,20 +107,31 @@ def main(rank, world_size, args):
 
     for length in map(int, args.length_list.split(',')):
         print(f"Begin testing on phone books of length {length}...")
-        dataset_name = f"length={length}_tokenized=True_size={args.size}_few-shot={args.few_shot}_reversed={args.reversed}.pt"
-        dataset_path = os.path.join(args.save_path, dataset_name)
+        phonebook = None
 
-        if os.path.exists(dataset_path):
-            print(f"Load dataset from {dataset_path}")
-            phonebook = torch.load(dataset_path)
-        else:
-            print(f"No dataset found at {dataset_path}. Generating a new dataset.")
+        if args.save_path is not None and os.path.exists(args.save_path):
+            dataset_name = f"length={length}_tokenized=True_size={args.size}_few-shot={args.few_shot}_reversed={args.reversed}"
+            if "llama" in args.model.lower():
+                model_name = "llama"
+            elif "bamba" in args.model.lower():
+                model_name = "bamba"
+            else:
+                model_name = "other"
+            dataset_path = os.path.join(args.save_path, model_name, dataset_name)
+
+            if os.path.exists(dataset_path):
+                print(f"Load dataset from {dataset_path}")
+                phonebook = datasets.load_from_disk(dataset_path).with_format("torch")
+            
+        if phonebook is None:
+            print(f"Generating a new dataset.")
             phonebook = PhoneBookDataset(
                 length=length, 
                 tokenizer=tokenizer, 
                 size=args.size,
                 few_shot=args.few_shot,
-                reversed=args.reversed
+                reversed=args.reversed,
+                random_depth=args.random_depth
             )
 
         sampler = DistributedSampler(phonebook, rank=rank, num_replicas=world_size, shuffle=True)
@@ -117,6 +141,8 @@ def main(rank, world_size, args):
         if rank == 0:
             print(batch_registers, depth_registers)
         torch.distributed.barrier()
+        gc.collect()
+        torch.cuda.empty_cache()
 
     dist.destroy_process_group()
 
@@ -128,6 +154,7 @@ if __name__ == "__main__":
     parser.add_argument('--size', default=100, type=int, help="Number of samples in dataset.") 
     parser.add_argument('--few-shot', default=2, type=int, help="Few-shot examples in prompt.") 
     parser.add_argument('--reversed', action='store_true', help="Use reversed prompt template.")
+    parser.add_argument('--random-depth', action='store_true', help="Use random depth for each sample.") 
     parser.add_argument('--save-path', type=str, help="Path to save dataset.")  
     args = parser.parse_args()
 

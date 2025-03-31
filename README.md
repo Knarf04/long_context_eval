@@ -1,4 +1,5 @@
 # Long Context Evaluation
+
 ## Phone Book Retrieval
 
 The dataset is generated using `phone_book/phone_book_dataset.py` based on the following rules:
@@ -15,6 +16,7 @@ To mitigate potential [OOM issues caused by FSDP](https://github.com/huggingface
 Below is an example command to run the evaluation:
 
 First, generate and store a dataset for a specific length
+
 ```bash
 python phone_book_dataset.py \
     --model ibm-fms/Bamba-9B \
@@ -24,7 +26,9 @@ python phone_book_dataset.py \
     --reversed \
     --save-path $HF_HOME/datasets/phonebook
 ```
+
 Then, run evaluation
+
 ```bash
 torchrun --nnodes 1 --nproc_per_node 4 \
     phone_book_eval.py \
@@ -36,3 +40,17 @@ torchrun --nnodes 1 --nproc_per_node 4 \
     --reversed \
     --save-path $HF_HOME/datasets/phonebook
 ```
+
+
+
+
+
+## mamba_exp
+
+The code I used to work with [mamba_ssm](https://github.com/state-spaces/mamba), specifically to store the intermediate logits and generate attention maps for mamba layers. They also work with the [huggingface Bamba model implementation](https://github.com/huggingface/transformers/tree/main/src/transformers/models/bamba), as they directly adopted the same triton kernels. 
+
+* To get started, first set the directories listed under several TODOs.
+
+* Next, add `toggle_decorator(output_attentions=True, store_logits=True, compute_attn_map=False)` after your mamba model declaration to collect logits. 
+
+* After a full run of the forward path, simply run `main.py` to plot the attention map of each of the heads out. 
